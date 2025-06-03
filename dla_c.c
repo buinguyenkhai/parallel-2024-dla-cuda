@@ -5,17 +5,17 @@
 #include <stdbool.h>
 
 // --- Global Pointers for Dynamically Allocated Arrays ---
-// These will be allocated based on runtime grid_size and num_particles_val
-int* frozen_grid_g = NULL;    // 1D array representing 2D grid
-int* particle_grid_g = NULL;  // 1D array
-int* contact_grid_g = NULL;   // 1D array
-int* particles_g = NULL;      // 2D array (num_particles_val x 2)
+int* frozen_grid_g = NULL;
+int* particle_grid_g = NULL;
+int* contact_grid_g = NULL;
+int* particles_g = NULL;
 int active_particles_g;
 
 // --- Runtime Configuration Variables ---
 int GRID_SIZE_RUNTIME = 200;
 int NUM_PARTICLES_RUNTIME = 1000;
 int MAX_STEPS_RUNTIME = 7000;
+int INITIAL_FROZEN_POINTS_RUNTIME = 4; 
 size_t MAX_RLE_LINE_BUFFER_SIZE_RUNTIME;
 
 
@@ -24,7 +24,6 @@ size_t MAX_RLE_LINE_BUFFER_SIZE_RUNTIME;
 
 // --- Memory Allocation and Deallocation ---
 bool allocate_global_arrays(int r_grid_size, int r_num_particles) {
-    // Deallocate first if already allocated (e.g., for multiple test runs in one program execution, though not current design)
     if (frozen_grid_g) {free(frozen_grid_g);}
     if (particle_grid_g) {free(particle_grid_g);}
     if (contact_grid_g) {free(contact_grid_g);}
@@ -33,11 +32,10 @@ bool allocate_global_arrays(int r_grid_size, int r_num_particles) {
     frozen_grid_g = (int*)malloc(r_grid_size * r_grid_size * sizeof(int));
     particle_grid_g = (int*)malloc(r_grid_size * r_grid_size * sizeof(int));
     contact_grid_g = (int*)malloc(r_grid_size * r_grid_size * sizeof(int));
-    particles_g = (int*)malloc(r_num_particles * 2 * sizeof(int)); // For x and y coordinates
+    particles_g = (int*)malloc(r_num_particles * 2 * sizeof(int));
 
     if (!frozen_grid_g || !particle_grid_g || !contact_grid_g || !particles_g) {
         fprintf(stderr, "Error: Failed to allocate global arrays.\n");
-        // Free any that were successfully allocated before failing
         if (frozen_grid_g) {free(frozen_grid_g); frozen_grid_g = NULL;}
         if (particle_grid_g) {free(particle_grid_g); particle_grid_g = NULL;}
         if (contact_grid_g) {free(contact_grid_g); contact_grid_g = NULL;}
@@ -56,18 +54,27 @@ void free_global_arrays() {
 
 
 void init_grids() {
-    for (int i = 0; i < GRID_SIZE_RUNTIME; i++)
-        for (int j = 0; j < GRID_SIZE_RUNTIME; j++)
+    // Initialize frozen_grid_g to all zeros
+    for (int i = 0; i < GRID_SIZE_RUNTIME; i++) {
+        for (int j = 0; j < GRID_SIZE_RUNTIME; j++) {
             frozen_grid_g[IDX(i, j, GRID_SIZE_RUNTIME)] = 0;
+        }
+    }
 
-    int margin = 5;
-    if (GRID_SIZE_RUNTIME > 2 * margin) { // Ensure margin is valid
-        frozen_grid_g[IDX(margin, margin, GRID_SIZE_RUNTIME)] = 1;
-        frozen_grid_g[IDX(margin, GRID_SIZE_RUNTIME - margin - 1, GRID_SIZE_RUNTIME)] = 1;
-        frozen_grid_g[IDX(GRID_SIZE_RUNTIME - margin - 1, margin, GRID_SIZE_RUNTIME)] = 1;
-        frozen_grid_g[IDX(GRID_SIZE_RUNTIME - margin - 1, GRID_SIZE_RUNTIME - margin - 1, GRID_SIZE_RUNTIME)] = 1;
-    } else if (GRID_SIZE_RUNTIME > 0) { // Fallback for small grids
-        frozen_grid_g[IDX(0,0,GRID_SIZE_RUNTIME)] = 1;
+    // Set initial frozen seed points
+    if (GRID_SIZE_RUNTIME > 0) { 
+        if (INITIAL_FROZEN_POINTS_RUNTIME == 1) {
+            int mid_r = GRID_SIZE_RUNTIME / 2;
+            int mid_c = GRID_SIZE_RUNTIME / 2;
+            frozen_grid_g[IDX(mid_r, mid_c, GRID_SIZE_RUNTIME)] = 1;
+        } else if (INITIAL_FROZEN_POINTS_RUNTIME > 1) {
+            for (int k = 0; k < INITIAL_FROZEN_POINTS_RUNTIME; k++) {
+                if (GRID_SIZE_RUNTIME == 0) break; 
+                int r_idx = rand() % GRID_SIZE_RUNTIME;
+                int c_idx = rand() % GRID_SIZE_RUNTIME;
+                frozen_grid_g[IDX(r_idx, c_idx, GRID_SIZE_RUNTIME)] = 1;
+            }
+        }
     }
 
 
@@ -113,10 +120,10 @@ void generate_contact_grid() {
     for (int x = 0; x < GRID_SIZE_RUNTIME; x++) {
         for (int y = 0; y < GRID_SIZE_RUNTIME; y++) {
             if (frozen_grid_g[IDX(x, y, GRID_SIZE_RUNTIME)] == 1) {
-                for (int dx = -1; dx <= 1; dx++) {
-                    for (int dy = -1; dy <= 1; dy++) {
-                        int nx = x + dx;
-                        int ny = y + dy;
+                for (int dx_offset = -1; dx_offset <= 1; dx_offset++) { 
+                    for (int dy_offset = -1; dy_offset <= 1; dy_offset++) { 
+                        int nx = x + dx_offset;
+                        int ny = y + dy_offset;
                         if (nx >= 0 && nx < GRID_SIZE_RUNTIME && ny >= 0 && ny < GRID_SIZE_RUNTIME) {
                             contact_grid_g[IDX(nx, ny, GRID_SIZE_RUNTIME)] += 1;
                         }
@@ -138,20 +145,17 @@ void calculate_frozen_grid() {
 }
 
 void remove_frozen_particles() {
-    // Temporary buffer for new particles. Could also be dynamically allocated if NUM_PARTICLES_RUNTIME is huge.
-    // For now, assuming NUM_PARTICLES_RUNTIME allows stack allocation for this temp buffer.
-    // If it's very large, this should also be heap allocated.
     int* new_particles_temp = (int*)malloc(NUM_PARTICLES_RUNTIME * 2 * sizeof(int));
     if (!new_particles_temp) {
         fprintf(stderr, "Error: Failed to allocate temporary particle buffer in remove_frozen_particles.\n");
-        return; // Or handle error more gracefully
+        return;
     }
     int new_count = 0;
 
     for (int i = 0; i < active_particles_g; i++) {
         int x = particles_g[i * 2 + 0];
         int y = particles_g[i * 2 + 1];
-        if (frozen_grid_g[IDX(x,y,GRID_SIZE_RUNTIME)] == 0) { // If not frozen
+        if (frozen_grid_g[IDX(x,y,GRID_SIZE_RUNTIME)] == 0) { 
             if (new_count < NUM_PARTICLES_RUNTIME) {
                  new_particles_temp[new_count * 2 + 0] = x;
                  new_particles_temp[new_count * 2 + 1] = y;
@@ -169,7 +173,6 @@ void remove_frozen_particles() {
 }
 
 void record_state_rle(FILE *f, int step) {
-    // Allocate RLE buffer dynamically or ensure static buffer is large enough
     char *line_buffer = (char*)malloc(MAX_RLE_LINE_BUFFER_SIZE_RUNTIME);
     if (!line_buffer) {
         fprintf(stderr, "C RLE Error: Failed to allocate line_buffer.\n");
@@ -236,26 +239,27 @@ end_line_write_c_dynamic:
     free(line_buffer); 
 }
 
-void run_simulation_c(bool enable_rle_recording, const char* output_filename) {
+void run_simulation_c(bool enable_rle_recording, const char* output_filename, int* steps_executed) {
     FILE *f_rle = NULL;
+    *steps_executed = 0; 
+
     if (enable_rle_recording) {
         if (output_filename != NULL && remove(output_filename) == 0) {
-             // Optional: printf("C RLE run: Deleted existing output file: %s\n", output_filename);
         }
         f_rle = fopen(output_filename, "w");
         if (f_rle == NULL) {
             fprintf(stderr, "C RLE run: Cannot open output file: %s\n", output_filename);
-            return;
+            return; 
         }
         printf("C RLE run: Output will be written to %s\n", output_filename);
     }
 
     for (int step = 0; step < MAX_STEPS_RUNTIME; step++) {
         if (active_particles_g == 0) {
-            if (enable_rle_recording){
+            if (enable_rle_recording && f_rle != NULL){ 
                  printf("C RLE run: No active particles left at step %d. Stopping.\n", step);
             }
-            break;
+            break; 
         }
         random_walk();
         generate_contact_grid();
@@ -264,26 +268,36 @@ void run_simulation_c(bool enable_rle_recording, const char* output_filename) {
             record_state_rle(f_rle, step);
         }
         remove_frozen_particles();
+        (*steps_executed)++; 
     }
 
     if (enable_rle_recording && f_rle != NULL) {
         fclose(f_rle);
-        printf("C RLE run: Simulation complete.\n");
+        printf("C RLE run: Simulation data recording complete.\n");
     }
 }
 
 void print_usage(const char* prog_name) {
-    fprintf(stderr, "Usage: %s <grid_size> <num_particles> <max_steps> <benchmark_runs> [generate_csv]\n", prog_name);
-    fprintf(stderr, "Example: %s 200 1000 7000 5 generate_csv\n", prog_name);
-    fprintf(stderr, "Example (benchmark only): %s 200 1000 7000 5\n", prog_name);
+    fprintf(stderr, "Usage: %s <grid_size> <num_particles> <max_steps> <initial_frozen_points> <benchmark_runs> [generate_csv]\n", prog_name);
+    fprintf(stderr, "  <grid_size>: Integer, size of one dimension of the square grid (e.g., 200).\n");
+    fprintf(stderr, "  <num_particles>: Integer, initial number of moving particles (e.g., 1000).\n");
+    fprintf(stderr, "  <max_steps>: Integer, maximum simulation steps (e.g., 7000).\n");
+    fprintf(stderr, "  <initial_frozen_points>: Integer, number of initial frozen seed points (e.g., 0, 1, or more).\n");
+    fprintf(stderr, "                           If 1, placed in the center. If >1, placed randomly.\n");
+    fprintf(stderr, "  <benchmark_runs>: Integer, number of times to run the simulation for benchmarking (e.g., 5).\n");
+    fprintf(stderr, "  [generate_csv]: Optional string 'generate_csv' to output RLE data to a file.\n");
+    fprintf(stderr, "Example: %s 200 1000 7000 1 5 generate_csv (1 point in center)\n", prog_name);
+    fprintf(stderr, "Example: %s 200 1000 7000 4 5 generate_csv (4 random points)\n", prog_name);
+    fprintf(stderr, "Example (benchmark only): %s 200 1000 7000 4 5\n", prog_name);
 }
 
 int main(int argc, char *argv[]) {
     const char* c_output_filename = "dla_output_rle.csv";
     bool perform_rle_run = false;
-    int num_benchmark_runs = 1; // Default to 1 benchmark run if not specified
+    int num_benchmark_runs = 1;
+    int c_rle_actual_steps = 0; 
 
-    if (argc < 5 || argc > 6) {
+    if (argc < 6 || argc > 7) {
         print_usage(argv[0]);
         return 1;
     }
@@ -291,18 +305,20 @@ int main(int argc, char *argv[]) {
     GRID_SIZE_RUNTIME = atoi(argv[1]);
     NUM_PARTICLES_RUNTIME = atoi(argv[2]);
     MAX_STEPS_RUNTIME = atoi(argv[3]);
-    num_benchmark_runs = atoi(argv[4]);
+    INITIAL_FROZEN_POINTS_RUNTIME = atoi(argv[4]); 
+    num_benchmark_runs = atoi(argv[5]);            
 
-    if (GRID_SIZE_RUNTIME <= 0 || NUM_PARTICLES_RUNTIME <= 0 || MAX_STEPS_RUNTIME < 0 || num_benchmark_runs <= 0) {
-        fprintf(stderr, "Error: grid_size, num_particles, max_steps, and benchmark_runs must be positive integers.\n");
+    if (GRID_SIZE_RUNTIME <= 0 || NUM_PARTICLES_RUNTIME <= 0 || MAX_STEPS_RUNTIME < 0 || 
+        INITIAL_FROZEN_POINTS_RUNTIME < 0 || num_benchmark_runs <= 0) {
+        fprintf(stderr, "Error: grid_size, num_particles, benchmark_runs must be positive.\n");
+        fprintf(stderr, "       max_steps and initial_frozen_points must be non-negative.\n");
         print_usage(argv[0]);
         return 1;
     }
     
-    MAX_RLE_LINE_BUFFER_SIZE_RUNTIME = (size_t)GRID_SIZE_RUNTIME * GRID_SIZE_RUNTIME * 8 + 100;
+    MAX_RLE_LINE_BUFFER_SIZE_RUNTIME = (size_t)GRID_SIZE_RUNTIME * GRID_SIZE_RUNTIME * 8 + 100; 
 
-
-    if (argc == 6 && strcmp(argv[5], "generate_csv") == 0) {
+    if (argc == 7 && strcmp(argv[6], "generate_csv") == 0) { 
         perform_rle_run = true;
     }
 
@@ -310,50 +326,67 @@ int main(int argc, char *argv[]) {
     printf("  Grid Size: %d x %d\n", GRID_SIZE_RUNTIME, GRID_SIZE_RUNTIME);
     printf("  Number of Particles: %d\n", NUM_PARTICLES_RUNTIME);
     printf("  Max Steps: %d\n", MAX_STEPS_RUNTIME);
+    printf("  Initial Frozen Points: %d (if 1, center; if >1, random)\n", INITIAL_FROZEN_POINTS_RUNTIME);
     printf("  Benchmark Runs: %d\n", num_benchmark_runs);
     printf("  Generate CSV: %s\n", perform_rle_run ? "Yes" : "No");
     printf("--------------------------------------------------\n");
 
     if (!allocate_global_arrays(GRID_SIZE_RUNTIME, NUM_PARTICLES_RUNTIME)) {
-        return 1; // Allocation failed
+        return 1; 
     }
     
-    // --- Averaged Benchmark Run (C version) ---
     double total_elapsed_time_c_sec = 0;
+    long long total_benchmark_steps_c = 0; // Use long long for total steps
     printf("\nStarting C Benchmark Phase (%d timed runs)\n", num_benchmark_runs);
+    int c_benchmark_iteration_steps = 0;
 
     for (int i = 0; i < num_benchmark_runs; ++i) {
-        srand(42); // Seed for C's rand() - consistent for each benchmark iteration
+        srand(42); 
         init_grids(); 
 
         struct timespec start_time_c, end_time_c;
         clock_gettime(CLOCK_MONOTONIC, &start_time_c);
 
-        run_simulation_c(false, NULL); // false = disable RLE
+        run_simulation_c(false, NULL, &c_benchmark_iteration_steps); 
 
         clock_gettime(CLOCK_MONOTONIC, &end_time_c);
         double current_run_time_sec = (end_time_c.tv_sec - start_time_c.tv_sec) +
                                        (end_time_c.tv_nsec - start_time_c.tv_nsec) / 1e9;
         total_elapsed_time_c_sec += current_run_time_sec;
-        printf("C Benchmark Run %d/%d took %f seconds.\n", i + 1, num_benchmark_runs, current_run_time_sec);
+        total_benchmark_steps_c += c_benchmark_iteration_steps;
+
+        double time_per_step_sec = 0;
+        if (c_benchmark_iteration_steps > 0) {
+            time_per_step_sec = current_run_time_sec / c_benchmark_iteration_steps;
+        }
+        printf("C Benchmark Run %d/%d: %d steps, %f seconds total, %e seconds/step.\n", 
+               i + 1, num_benchmark_runs, c_benchmark_iteration_steps, current_run_time_sec, time_per_step_sec);
     }
     
     if (num_benchmark_runs > 0) {
         double average_time_c_sec = total_elapsed_time_c_sec / num_benchmark_runs;
-        printf("C Average Computation Benchmark Time (over %d runs): %f seconds.\n", num_benchmark_runs, average_time_c_sec);
+        printf("C Average Total Benchmark Time (over %d runs): %f seconds.\n", num_benchmark_runs, average_time_c_sec);
+        if (total_benchmark_steps_c > 0) {
+            double average_time_per_step_c_sec = total_elapsed_time_c_sec / total_benchmark_steps_c;
+            printf("C Average Benchmark Time Per Step (over %lld steps): %e seconds/step.\n", total_benchmark_steps_c, average_time_per_step_c_sec);
+        } else {
+            printf("C Average Benchmark Time Per Step: N/A (0 steps executed).\n");
+        }
     }
     printf("--------------------------------------------------\n");
 
-    // --- RLE Output Generation Run (C version) ---
     if (perform_rle_run) {
         printf("\nStarting C RLE Output Generation Run\n");
-        srand(42);    // Re-seed to ensure the same simulation is visualized
+        srand(42); 
         init_grids(); 
-        run_simulation_c(true, c_output_filename);
+        run_simulation_c(true, c_output_filename, &c_rle_actual_steps);
         printf("--------------------------------------------------\n");
     }
 
-    free_global_arrays(); // IMPORTANT: Free dynamically allocated memory
+    free_global_arrays(); 
     printf("\nC simulation tasks complete.\n");
+    if (perform_rle_run) {
+        printf("The C RLE simulation ran for %d steps.\n", c_rle_actual_steps);
+    }
     return 0;
 }

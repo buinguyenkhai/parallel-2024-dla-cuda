@@ -7,10 +7,10 @@
 #include <stdbool.h>
 
 // --- Runtime Configuration Variables ---
-// These will be set from command-line arguments
 int GRID_SIZE_RUNTIME = 200;
 int NUM_PARTICLES_RUNTIME = 1000;
 int MAX_STEPS_RUNTIME = 7000;
+int INITIAL_FROZEN_POINTS_RUNTIME = 4; 
 size_t MAX_RLE_LINE_BUFFER_SIZE_RUNTIME;
 
 
@@ -23,7 +23,6 @@ size_t MAX_RLE_LINE_BUFFER_SIZE_RUNTIME;
 }
 
 // --- Global Device Pointers ---
-// These are allocated in main based on NUM_PARTICLES_RUNTIME and GRID_SIZE_RUNTIME
 int* d_frozen_grid;
 int* d_particle_grid;
 int* d_contact_grid;
@@ -46,7 +45,7 @@ __global__ void init_frozen_grid_kernel(int* frozen_grid, int size_val) {
 
 __global__ void init_particles_kernel(int* particles_arr, curandState* rand_states_arr, int num_particles_val, int size_val, unsigned long long seed) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < num_particles_val) { // Use num_particles_val from argument
+    if (i < num_particles_val) {
         curand_init(seed, i, 0, &rand_states_arr[i]);
         particles_arr[i * 2 + 0] = curand_uniform(&rand_states_arr[i]) * size_val; 
         particles_arr[i * 2 + 1] = curand_uniform(&rand_states_arr[i]) * size_val; 
@@ -65,7 +64,7 @@ __global__ void clear_grid_kernel(int* grid, int total_size_val, int value) {
 __global__ void random_walk_kernel(int* particles_arr, curandState* rand_states_arr, int current_active_particles, int size_val) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < current_active_particles) {
-        curandState localState = rand_states_arr[i]; // Use array passed as argument
+        curandState localState = rand_states_arr[i]; 
         int dx = (int)(floorf(curand_uniform(&localState) * 3.0f)) - 1;
         int dy = (int)(floorf(curand_uniform(&localState) * 3.0f)) - 1;
         int current_x = particles_arr[i * 2 + 0];
@@ -82,18 +81,18 @@ __global__ void update_particle_grid_kernel(int* particles_arr, int* particle_gr
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < current_active_particles) {
         int x = particles_arr[i * 2 + 0]; int y = particles_arr[i * 2 + 1];
-        particle_grid_arr[y * size_val + x] = 1; // Use array passed as argument
+        particle_grid_arr[y * size_val + x] = 1; 
     }
 }
 
 __global__ void generate_contact_grid_kernel(int* frozen_grid_arr, int* contact_grid_arr, int size_val) {
     int x = blockIdx.x * blockDim.x + threadIdx.x; int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x < size_val && y < size_val) {
-        if (frozen_grid_arr[y * size_val + x] == 1) { // Use array passed as argument
-            for (int dy_kernel = -1; dy_kernel <= 1; dy_kernel++) for (int dx_kernel = -1; dx_kernel <= 1; dx_kernel++) { // Renamed dx, dy to avoid conflict
+        if (frozen_grid_arr[y * size_val + x] == 1) { 
+            for (int dy_kernel = -1; dy_kernel <= 1; dy_kernel++) for (int dx_kernel = -1; dx_kernel <= 1; dx_kernel++) {
                 int nx = x + dx_kernel; int ny = y + dy_kernel;
                 if (nx >= 0 && nx < size_val && ny >= 0 && ny < size_val) {
-                    atomicAdd(&contact_grid_arr[ny * size_val + nx], 1); // Use array passed as argument
+                    atomicAdd(&contact_grid_arr[ny * size_val + nx], 1); 
                 }
             }
         }
@@ -103,13 +102,12 @@ __global__ void generate_contact_grid_kernel(int* frozen_grid_arr, int* contact_
 __global__ void calculate_frozen_grid_kernel(int* frozen_grid_arr, int* particle_grid_arr, int* contact_grid_arr, int size_val) {
     int x = blockIdx.x * blockDim.x + threadIdx.x; int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x < size_val && y < size_val) {
-        if (contact_grid_arr[y * size_val + x] > 0 && particle_grid_arr[y * size_val + x] == 1) { // Use arrays passed as arguments
-            frozen_grid_arr[y * size_val + x] = 1; // Use array passed as argument
+        if (contact_grid_arr[y * size_val + x] > 0 && particle_grid_arr[y * size_val + x] == 1) { 
+            frozen_grid_arr[y * size_val + x] = 1; 
         }
     }
 }
 
-// Modified to accept max_particles (NUM_PARTICLES_RUNTIME) as an argument
 __global__ void remove_frozen_particles_kernel(
     int* current_particles_arr, int* new_particles_buffer_arr, int* frozen_grid_arr,
     int current_active_count, int* new_active_count_atomic_ptr, int size_val, int max_particles_allowed) {
@@ -118,7 +116,7 @@ __global__ void remove_frozen_particles_kernel(
         int px = current_particles_arr[i * 2 + 0]; int py = current_particles_arr[i * 2 + 1];
         if (frozen_grid_arr[py * size_val + px] == 0) { 
             int write_idx = atomicAdd(new_active_count_atomic_ptr, 1); 
-            if (write_idx < max_particles_allowed) { // Use passed argument here
+            if (write_idx < max_particles_allowed) { 
                 new_particles_buffer_arr[write_idx * 2 + 0] = px;
                 new_particles_buffer_arr[write_idx * 2 + 1] = py;
             }
@@ -126,19 +124,22 @@ __global__ void remove_frozen_particles_kernel(
     }
 }
 
-void host_init_grids_specific_points(int size_val) {
-    int val = 1; int margin = 5; int r, c;
-     if (size_val > 2 * margin) {
-        r = margin; c = margin;
-        CUDA_CHECK(cudaMemcpy(&d_frozen_grid[r * size_val + c], &val, sizeof(int), cudaMemcpyHostToDevice));
-        r = margin; c = size_val - margin - 1;
-        CUDA_CHECK(cudaMemcpy(&d_frozen_grid[r * size_val + c], &val, sizeof(int), cudaMemcpyHostToDevice));
-        r = size_val - margin - 1; c = margin;
-        CUDA_CHECK(cudaMemcpy(&d_frozen_grid[r * size_val + c], &val, sizeof(int), cudaMemcpyHostToDevice));
-        r = size_val - margin - 1; c = size_val - margin - 1;
-        CUDA_CHECK(cudaMemcpy(&d_frozen_grid[r * size_val + c], &val, sizeof(int), cudaMemcpyHostToDevice));
-    } else if (size_val > 0) {
-         CUDA_CHECK(cudaMemcpy(&d_frozen_grid[0], &val, sizeof(int), cudaMemcpyHostToDevice));
+void host_init_grids_specific_points(int size_val, int num_initial_points) {
+    int val = 1;
+
+    if (size_val > 0) { 
+        if (num_initial_points == 1) {
+            int mid_r = size_val / 2;
+            int mid_c = size_val / 2;
+            CUDA_CHECK(cudaMemcpy(&d_frozen_grid[mid_r * size_val + mid_c], &val, sizeof(int), cudaMemcpyHostToDevice));
+        } else if (num_initial_points > 1) {
+            for (int k = 0; k < num_initial_points; k++) {
+                if (size_val == 0) break; 
+                int r_idx = rand() % size_val; 
+                int c_idx = rand() % size_val; 
+                CUDA_CHECK(cudaMemcpy(&d_frozen_grid[r_idx * size_val + c_idx], &val, sizeof(int), cudaMemcpyHostToDevice));
+            }
+        }
     }
 }
 
@@ -201,7 +202,7 @@ end_line_write_cuda_dynamic:
     free(line_buffer); 
 }
 
-void reinitialize_cuda_state(unsigned long long seed) {
+void reinitialize_cuda_state(unsigned long long seed_param) { 
     h_active_particles = NUM_PARTICLES_RUNTIME; 
 
     dim3 threadsPerBlock2D(16, 16);
@@ -211,10 +212,10 @@ void reinitialize_cuda_state(unsigned long long seed) {
 
     init_frozen_grid_kernel<<<numBlocks2D, threadsPerBlock2D>>>(d_frozen_grid, GRID_SIZE_RUNTIME);
     CUDA_CHECK(cudaGetLastError()); 
-    host_init_grids_specific_points(GRID_SIZE_RUNTIME);
+    host_init_grids_specific_points(GRID_SIZE_RUNTIME, INITIAL_FROZEN_POINTS_RUNTIME); 
 
     int numBlocksParticles = (NUM_PARTICLES_RUNTIME + threadsPerBlock1D - 1) / threadsPerBlock1D;
-    init_particles_kernel<<<numBlocksParticles, threadsPerBlock1D>>>(d_particles, d_rand_states, NUM_PARTICLES_RUNTIME, GRID_SIZE_RUNTIME, seed);
+    init_particles_kernel<<<numBlocksParticles, threadsPerBlock1D>>>(d_particles, d_rand_states, NUM_PARTICLES_RUNTIME, GRID_SIZE_RUNTIME, seed_param);
     CUDA_CHECK(cudaGetLastError());
 
     int totalGridCells = GRID_SIZE_RUNTIME * GRID_SIZE_RUNTIME;
@@ -229,16 +230,17 @@ void reinitialize_cuda_state(unsigned long long seed) {
 }
 
 void run_simulation_cuda(bool enable_rle_recording, const char* output_filename,
-                         int* h_frozen_grid_cpu_buf, int* h_particle_grid_cpu_buf) {
+                         int* h_frozen_grid_cpu_buf, int* h_particle_grid_cpu_buf, int* steps_executed) {
     FILE* f_rle = NULL;
+    *steps_executed = 0; 
+
     if (enable_rle_recording) {
         if (output_filename != NULL && remove(output_filename) == 0) {
-            // Optional: printf("CUDA RLE run: Deleted existing output file: %s\n", output_filename);
         }
         f_rle = fopen(output_filename, "w");
         if (f_rle == NULL) {
             fprintf(stderr, "CUDA RLE run: Cannot open output file: %s\n", output_filename);
-            return;
+            return; 
         }
         printf("CUDA RLE run: Output will be written to %s\n", output_filename);
     }
@@ -252,35 +254,35 @@ void run_simulation_cuda(bool enable_rle_recording, const char* output_filename,
 
     for (int step = 0; step < MAX_STEPS_RUNTIME; step++) {
         if (h_active_particles == 0) {
-            if (enable_rle_recording){
+            if (enable_rle_recording && f_rle != NULL){ 
                  printf("CUDA RLE run: No active particles left at step %d. Stopping.\n", step);
             }
-            break;
+            break; 
         }
 
         int numBlocksActiveParticles = (h_active_particles + threadsPerBlock1D - 1) / threadsPerBlock1D;
 
         if (h_active_particles > 0) {
             random_walk_kernel<<<numBlocksActiveParticles, threadsPerBlock1D>>>(d_particles, d_rand_states, h_active_particles, GRID_SIZE_RUNTIME);
-            if (enable_rle_recording) CUDA_CHECK(cudaGetLastError()); 
+            CUDA_CHECK(cudaGetLastError()); 
         }
 
         clear_grid_kernel<<<numBlocksGridClear, threadsPerBlock1D>>>(d_particle_grid, totalGridCells, 0);
-        if (enable_rle_recording) CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaGetLastError());
         
         if (h_active_particles > 0) {
             update_particle_grid_kernel<<<numBlocksActiveParticles, threadsPerBlock1D>>>(d_particles, d_particle_grid, h_active_particles, GRID_SIZE_RUNTIME);
-            if (enable_rle_recording) CUDA_CHECK(cudaGetLastError());
+            CUDA_CHECK(cudaGetLastError());
         }
 
         clear_grid_kernel<<<numBlocksGridClear, threadsPerBlock1D>>>(d_contact_grid, totalGridCells, 0);
-        if (enable_rle_recording) CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaGetLastError());
         
         generate_contact_grid_kernel<<<numBlocks2D, threadsPerBlock2D>>>(d_frozen_grid, d_contact_grid, GRID_SIZE_RUNTIME);
-        if (enable_rle_recording) CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaGetLastError());
         
         calculate_frozen_grid_kernel<<<numBlocks2D, threadsPerBlock2D>>>(d_frozen_grid, d_particle_grid, d_contact_grid, GRID_SIZE_RUNTIME);
-        if (enable_rle_recording) CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaGetLastError());
 
         if (enable_rle_recording && f_rle != NULL) {
             CUDA_CHECK(cudaMemcpy(h_frozen_grid_cpu_buf, d_frozen_grid, (size_t)GRID_SIZE_RUNTIME * GRID_SIZE_RUNTIME * sizeof(int), cudaMemcpyDeviceToHost));
@@ -290,25 +292,23 @@ void run_simulation_cuda(bool enable_rle_recording, const char* output_filename,
 
         CUDA_CHECK(cudaMemset(d_active_particle_count_atomic, 0, sizeof(int))); 
         if (h_active_particles > 0) {
-            // Pass NUM_PARTICLES_RUNTIME to the kernel
             remove_frozen_particles_kernel<<<numBlocksActiveParticles, threadsPerBlock1D>>>(
                 d_particles, d_temp_particles, d_frozen_grid,
                 h_active_particles, d_active_particle_count_atomic, GRID_SIZE_RUNTIME, NUM_PARTICLES_RUNTIME);
-            if (enable_rle_recording) CUDA_CHECK(cudaGetLastError());
+            CUDA_CHECK(cudaGetLastError());
         }
         
         CUDA_CHECK(cudaMemcpy(&h_active_particles, d_active_particle_count_atomic, sizeof(int), cudaMemcpyDeviceToHost)); 
         if (h_active_particles > 0) {
-            // Ensure the number of elements to copy does not exceed the allocated buffer size for d_particles or d_temp_particles
             size_t bytes_to_copy = (size_t)h_active_particles * 2 * sizeof(int);
             if (bytes_to_copy <= (size_t)NUM_PARTICLES_RUNTIME * 2 * sizeof(int)) {
                  CUDA_CHECK(cudaMemcpy(d_particles, d_temp_particles, bytes_to_copy, cudaMemcpyDeviceToDevice));
             } else {
                 fprintf(stderr, "Error: Attempting to copy too many particles after compaction. Active: %d, Max: %d\n", h_active_particles, NUM_PARTICLES_RUNTIME);
-                // Handle error appropriately, perhaps by capping h_active_particles or exiting
-                h_active_particles = 0; // Stop simulation to prevent further issues
+                h_active_particles = 0; 
             }
         }
+        (*steps_executed)++; 
     }
 
     if (!enable_rle_recording) {
@@ -317,14 +317,22 @@ void run_simulation_cuda(bool enable_rle_recording, const char* output_filename,
 
     if (enable_rle_recording && f_rle != NULL) {
         fclose(f_rle);
-        printf("CUDA RLE run: Simulation complete.\n");
+        printf("CUDA RLE run: Simulation data recording complete.\n");
     }
 }
 
 void print_cuda_usage(const char* prog_name) {
-    fprintf(stderr, "Usage: %s <grid_size> <num_particles> <max_steps> <benchmark_runs> [generate_csv]\n", prog_name);
-    fprintf(stderr, "Example: %s 200 1000 7000 5 generate_csv\n", prog_name);
-    fprintf(stderr, "Example (benchmark only): %s 200 1000 7000 5\n", prog_name);
+    fprintf(stderr, "Usage: %s <grid_size> <num_particles> <max_steps> <initial_frozen_points> <benchmark_runs> [generate_csv]\n", prog_name);
+    fprintf(stderr, "  <grid_size>: Integer, size of one dimension of the square grid (e.g., 200).\n");
+    fprintf(stderr, "  <num_particles>: Integer, initial number of moving particles (e.g., 1000).\n");
+    fprintf(stderr, "  <max_steps>: Integer, maximum simulation steps (e.g., 7000).\n");
+    fprintf(stderr, "  <initial_frozen_points>: Integer, number of initial frozen seed points (e.g., 0, 1, or more).\n");
+    fprintf(stderr, "                           If 1, placed in the center. If >1, placed randomly.\n");
+    fprintf(stderr, "  <benchmark_runs>: Integer, number of times to run the simulation for benchmarking (e.g., 5).\n");
+    fprintf(stderr, "  [generate_csv]: Optional string 'generate_csv' to output RLE data to a file.\n");
+    fprintf(stderr, "Example: %s 200 1000 7000 1 5 generate_csv (1 point in center)\n", prog_name);
+    fprintf(stderr, "Example: %s 200 1000 7000 4 5 generate_csv (4 random points)\n", prog_name);
+    fprintf(stderr, "Example (benchmark only): %s 200 1000 7000 4 5\n", prog_name);
 }
 
 
@@ -333,8 +341,9 @@ int main(int argc, char *argv[]) {
     const char* cuda_output_filename = "dla_output_rle_cuda.csv";
     bool perform_rle_run = false;
     int num_benchmark_runs = 1;
+    int cuda_rle_actual_steps = 0; 
 
-    if (argc < 5 || argc > 6) {
+    if (argc < 6 || argc > 7) { 
         print_cuda_usage(argv[0]);
         return 1;
     }
@@ -342,39 +351,43 @@ int main(int argc, char *argv[]) {
     GRID_SIZE_RUNTIME = atoi(argv[1]);
     NUM_PARTICLES_RUNTIME = atoi(argv[2]);
     MAX_STEPS_RUNTIME = atoi(argv[3]);
-    num_benchmark_runs = atoi(argv[4]);
+    INITIAL_FROZEN_POINTS_RUNTIME = atoi(argv[4]); 
+    num_benchmark_runs = atoi(argv[5]);            
 
-    if (GRID_SIZE_RUNTIME <= 0 || NUM_PARTICLES_RUNTIME <= 0 || MAX_STEPS_RUNTIME < 0 || num_benchmark_runs <= 0) {
-        fprintf(stderr, "Error: grid_size, num_particles, max_steps, and benchmark_runs must be positive integers.\n");
+    if (GRID_SIZE_RUNTIME <= 0 || NUM_PARTICLES_RUNTIME <= 0 || MAX_STEPS_RUNTIME < 0 || 
+        INITIAL_FROZEN_POINTS_RUNTIME < 0 || num_benchmark_runs <= 0) {
+        fprintf(stderr, "Error: grid_size, num_particles, benchmark_runs must be positive.\n");
+        fprintf(stderr, "       max_steps and initial_frozen_points must be non-negative.\n");
         print_cuda_usage(argv[0]);
         return 1;
     }
     MAX_RLE_LINE_BUFFER_SIZE_RUNTIME = (size_t)GRID_SIZE_RUNTIME * GRID_SIZE_RUNTIME * 8 + 100;
 
 
-    if (argc == 6 && strcmp(argv[5], "generate_csv") == 0) {
+    if (argc == 7 && strcmp(argv[6], "generate_csv") == 0) { 
         perform_rle_run = true;
     }
     
+    srand((unsigned int)seed); 
+
     printf("CUDA Simulation Configuration:\n");
     printf("  Grid Size: %d x %d\n", GRID_SIZE_RUNTIME, GRID_SIZE_RUNTIME);
     printf("  Number of Particles: %d\n", NUM_PARTICLES_RUNTIME);
     printf("  Max Steps: %d\n", MAX_STEPS_RUNTIME);
+    printf("  Initial Frozen Points: %d (if 1, center; if >1, random)\n", INITIAL_FROZEN_POINTS_RUNTIME);
     printf("  Benchmark Runs: %d\n", num_benchmark_runs);
     printf("  Generate CSV: %s\n", perform_rle_run ? "Yes" : "No");
     printf("--------------------------------------------------\n");
 
 
-    // --- Allocate GPU Memory (once) ---
     CUDA_CHECK(cudaMalloc((void**)&d_frozen_grid, (size_t)GRID_SIZE_RUNTIME * GRID_SIZE_RUNTIME * sizeof(int)));
     CUDA_CHECK(cudaMalloc((void**)&d_particle_grid, (size_t)GRID_SIZE_RUNTIME * GRID_SIZE_RUNTIME * sizeof(int)));
     CUDA_CHECK(cudaMalloc((void**)&d_contact_grid, (size_t)GRID_SIZE_RUNTIME * GRID_SIZE_RUNTIME * sizeof(int)));
-    CUDA_CHECK(cudaMalloc((void**)&d_particles, (size_t)NUM_PARTICLES_RUNTIME * 2 * sizeof(int))); // num_particles x (x,y)
+    CUDA_CHECK(cudaMalloc((void**)&d_particles, (size_t)NUM_PARTICLES_RUNTIME * 2 * sizeof(int))); 
     CUDA_CHECK(cudaMalloc((void**)&d_rand_states, (size_t)NUM_PARTICLES_RUNTIME * sizeof(curandState)));
     CUDA_CHECK(cudaMalloc((void**)&d_active_particle_count_atomic, sizeof(int)));
     CUDA_CHECK(cudaMalloc((void**)&d_temp_particles, (size_t)NUM_PARTICLES_RUNTIME * 2 * sizeof(int)));
 
-    // --- Allocate Host CPU Memory for RLE (once) ---
     int* h_frozen_grid_cpu = (int*)malloc((size_t)GRID_SIZE_RUNTIME * GRID_SIZE_RUNTIME * sizeof(int));
     int* h_particle_grid_cpu = (int*)malloc((size_t)GRID_SIZE_RUNTIME * GRID_SIZE_RUNTIME * sizeof(int));
     if (!h_frozen_grid_cpu || !h_particle_grid_cpu) {
@@ -385,12 +398,14 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // --- Averaged Benchmark Run (CUDA version) ---
     float total_milliseconds = 0;
+    long long total_benchmark_steps_cuda = 0; // Use long long for total steps
     printf("\nStarting CUDA Benchmark Phase (%d timed runs)\n", num_benchmark_runs);
+    int cuda_benchmark_iteration_steps = 0;
 
     for (int i = 0; i < num_benchmark_runs; ++i) {
-        reinitialize_cuda_state(seed); 
+        srand((unsigned int)seed + i); 
+        reinitialize_cuda_state(seed + i); 
 
         cudaEvent_t start_event, stop_event;
         CUDA_CHECK(cudaEventCreate(&start_event));
@@ -399,34 +414,50 @@ int main(int argc, char *argv[]) {
         CUDA_CHECK(cudaDeviceSynchronize()); 
         CUDA_CHECK(cudaEventRecord(start_event, 0));
 
-        run_simulation_cuda(false, NULL, h_frozen_grid_cpu, h_particle_grid_cpu);
+        run_simulation_cuda(false, NULL, h_frozen_grid_cpu, h_particle_grid_cpu, &cuda_benchmark_iteration_steps);
 
         CUDA_CHECK(cudaEventRecord(stop_event, 0));
         CUDA_CHECK(cudaEventSynchronize(stop_event)); 
         float current_run_ms = 0;
         CUDA_CHECK(cudaEventElapsedTime(&current_run_ms, start_event, stop_event));
         total_milliseconds += current_run_ms;
-        printf("CUDA Benchmark Run %d/%d took %f ms (%f seconds).\n", i + 1, num_benchmark_runs, current_run_ms, current_run_ms / 1000.0f);
+        total_benchmark_steps_cuda += cuda_benchmark_iteration_steps;
+        
+        double time_per_step_ms = 0;
+        if (cuda_benchmark_iteration_steps > 0) {
+            time_per_step_ms = (double)current_run_ms / cuda_benchmark_iteration_steps;
+        }
+
+        printf("CUDA Benchmark Run %d/%d: %d steps, %f ms total, %e ms/step (%e seconds/step).\n", 
+               i + 1, num_benchmark_runs, cuda_benchmark_iteration_steps, current_run_ms, 
+               time_per_step_ms, time_per_step_ms / 1000.0);
+
         CUDA_CHECK(cudaEventDestroy(start_event));
         CUDA_CHECK(cudaEventDestroy(stop_event));
     }
     if (num_benchmark_runs > 0) {
-        float average_milliseconds = total_milliseconds / num_benchmark_runs;
-        printf("CUDA Average Computation Benchmark Time (over %d runs): %f ms (%f seconds).\n", num_benchmark_runs, average_milliseconds, average_milliseconds / 1000.0f);
+        float average_total_ms = total_milliseconds / num_benchmark_runs;
+        printf("CUDA Average Total Benchmark Time (over %d runs): %f ms (%f seconds).\n", 
+               num_benchmark_runs, average_total_ms, average_total_ms / 1000.0f);
+        if (total_benchmark_steps_cuda > 0) {
+            double average_time_per_step_ms = (double)total_milliseconds / total_benchmark_steps_cuda;
+            printf("CUDA Average Benchmark Time Per Step (over %lld steps): %e ms/step (%e seconds/step).\n", 
+                   total_benchmark_steps_cuda, average_time_per_step_ms, average_time_per_step_ms / 1000.0);
+        } else {
+            printf("CUDA Average Benchmark Time Per Step: N/A (0 steps executed).\n");
+        }
     }
     printf("--------------------------------------------------\n");
     
 
-    // --- RLE Output Generation Run (CUDA version) ---
     if (perform_rle_run) {
         printf("\nStarting CUDA RLE Output Generation Run\n");
+        srand((unsigned int)seed); 
         reinitialize_cuda_state(seed); 
-        run_simulation_cuda(true, cuda_output_filename, h_frozen_grid_cpu, h_particle_grid_cpu);
+        run_simulation_cuda(true, cuda_output_filename, h_frozen_grid_cpu, h_particle_grid_cpu, &cuda_rle_actual_steps);
         printf("--------------------------------------------------\n");
     }
     
-
-    // --- Cleanup ---
     free(h_frozen_grid_cpu);
     free(h_particle_grid_cpu);
     cudaFree(d_frozen_grid); cudaFree(d_particle_grid); cudaFree(d_contact_grid);
@@ -434,5 +465,8 @@ int main(int argc, char *argv[]) {
     cudaFree(d_active_particle_count_atomic); cudaFree(d_temp_particles);
     
     printf("\nCUDA simulation tasks complete.\n");
+    if (perform_rle_run) {
+        printf("The CUDA RLE simulation ran for %d steps.\n", cuda_rle_actual_steps);
+    }
     return 0;
 }
